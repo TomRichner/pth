@@ -51,3 +51,6 @@ ehthumbs.db
 .vscode/
 .idea/
 *.code-workspace
+
+# Test artifacts
+tests/tmp/

@@ -1,176 +1,213 @@
 # pth
 
-MATLAB utilities for **cross-platform file path handling** and **local caching of remote files**.
+MATLAB utilities for **cross-platform file path handling** and **safe, rclone-backed file caching** between local and remote/network storage.
 
-This repo provides two classes:
+**Minimum MATLAB version**: R2023a
 
-- **`pth`** — Parses a file path into its parts and reassembles it using the native file separator (`\` on Windows, `/` on macOS/Linux). Write paths once, run everywhere.
-- **`CachedPath`** — Wraps a `pth` object pointing to a remote/network file and transparently caches it to a local directory (e.g., SSD) for faster repeated access. Validates the cache by file size, checks disk space before copying, and reports transfer speeds.
+## Classes
+
+| Class | Purpose |
+|---|---|
+| `pth` | Cross-platform path normalization |
+| `CacheToLocal` | Copy remote files to a local cache (read-only remote) |
+| `CacheLocallyForRemote` | Write locally, then push to remote destination |
+| `ManageCacheToLocalTempDir` | Bulk operations on a read-cache directory |
+| `ManageCacheLocallyForRemoteTempDir` | Bulk operations on a write-cache directory |
+| `CacheBase` | Abstract base class (shared plumbing — not used directly) |
 
 ## Installation
 
-Clone the repository and add it to your MATLAB path:
+1. Clone the repository and add it to your MATLAB path:
 
 ```matlab
 addpath('/path/to/pth');
 ```
 
-Or add it via MATLAB's **Set Path** dialog.
+2. Install [rclone](https://rclone.org/) and create a `.env` file in the repo root:
+
+```
+RCLONE_PATH=C:\path\to\rclone.exe
+```
+
+> The `.env` file is gitignored and must be created on each machine.
 
 ---
 
 ## `pth` — Cross-Platform Paths
 
-### Basic Example
+Parses a file path and reassembles it using the native file separator (`\` on Windows, `/` on macOS/Linux).
 
 ```matlab
-% Create a pth object from any path style
 p = pth('C:/Users/data/experiment_01/raw');
-
-% Get the path using the current OS's file separator
 p.get()
 % On Windows: 'C:\Users\data\experiment_01\raw'
 % On macOS:   'C:/Users/data/experiment_01/raw'
-```
-
-### Cross-Platform Paths
-
-```matlab
-% Windows-style path on any OS
-p = pth('data\results\fig1.png');
-p.get()  % Uses native separator
-
-% Unix-style path on any OS
-p = pth('data/results/fig1.png');
-p.get()  % Uses native separator
 
 % Mixed separators are handled correctly
 p = pth('data/results\fig1.png');
 p.get()  % Uses native separator
 ```
 
-### Preserves Leading/Trailing Separators
+### API
 
-```matlab
-% Absolute Unix path
-p = pth('/usr/local/bin/');
-p.get()
-% On Linux: '/usr/local/bin/'
-% On Windows: '\usr\local\bin\'
-```
-
-### `pth` API
-
-#### Constructor
-
-```matlab
-obj = pth(pathString)
-```
-
-| Argument     | Type   | Description                                   |
-|-------------|--------|-----------------------------------------------|
-| `pathString` | `char` | A file path string using any separator style. |
-
-#### Properties
-
-| Property               | Type      | Description                                        |
-|------------------------|-----------|----------------------------------------------------|
-| `PathParts`            | `cell`    | Cell array of individual path components.          |
-| `StartsWithSeparator`  | `logical` | `true` if the original path began with `/` or `\`. |
-| `EndsWithSeparator`    | `logical` | `true` if the original path ended with `/` or `\`. |
-
-#### Methods
-
-| Method  | Returns | Description                                                 |
-|---------|---------|-------------------------------------------------------------|
-| `get()` | `char`  | Reassembles the path using the current OS's file separator. |
+| Method | Returns | Description |
+|---|---|---|
+| `pth(pathString)` | `pth` | Constructor. Accepts any separator style. |
+| `get()` | `char` | Reassembles path using the current OS's separator. |
 
 ---
 
-## `CachedPath` — Local Caching of Remote Files
+## `CacheToLocal` — Read Cache (Remote → Local)
 
-`CachedPath` is a `handle` class that wraps a `pth` object pointing to a file on a network drive or remote location. When you call `get()`, it copies the file to a local temp directory (if not already cached) and returns the local path — giving you fast, local-disk read speeds on subsequent accesses.
+Copies a file from a remote/network location to a local temp directory using `rclone copy --immutable`. The remote is **always treated as read-only**. The local copy is **always safe to delete**.
 
-### How It Works
+Files from the same remote directory share a local `dirname_hash/` folder, preventing filename collisions across different remote directories.
 
-1. On first `get()`, the remote file is copied to a local temp directory with a session-specific filename.
-2. On subsequent calls, the local cache is validated by comparing file sizes. If the sizes match, the cached copy is used directly.
-3. Before copying, available disk space is checked (with a 10% buffer). Works on both Windows and macOS/Linux.
-
-### Basic Example
+### Example
 
 ```matlab
-% Point to a large file on a network drive
-remote = pth('//server/share/data/session_001/recording.mat');
+remote = pth('\\server\share\data\session_001\recording.mat');
+ct = CacheToLocal(remote, 'C:\Users\m218089\Desktop\local_data\read_cache');
 
-% Create a cached version on local SSD
-cp = CachedPath(remote, 'D:\temp_cache', 'sess001');
-
-% First call copies the file (~2 GB at ~150 MB/s)
-local_path = cp.get();
-% Output:
+% First call copies via rclone
+local_path = ct.get();
 %   Copying file from remote to local cache...
 %     Remote: \\server\share\data\session_001\recording.mat
-%     Local:  D:\temp_cache\recording_sess001.mat
+%     Local:  C:\...\read_cache\session_001_a3f7c2\recording.mat
 %     Size:   2048.00 MB
 %   Copy completed in 13.7 seconds (149.49 MB/s)
 
-% Second call returns instantly from cache
-local_path = cp.get();
-% Output:
-%   Using cached local file: D:\temp_cache\recording_sess001.mat
+% Second call returns instantly (already cached)
+local_path = ct.get();
+%   Using cached local file: C:\...\read_cache\session_001_a3f7c2\recording.mat
+
+% Load your data from the fast local copy
+data = load(local_path);
+
+% Clean up when done
+ct.deleteLocal();
 ```
 
-### Preemptive Caching
+### API
+
+| Method | Returns | Description |
+|---|---|---|
+| `CacheToLocal(remote_pth, local_temp_dir)` | `CacheToLocal` | Constructor. |
+| `get()` | `char` | Returns local path, copying from remote if needed. |
+| `deleteLocal()` | — | Deletes local cached file. Does NOT touch remote. |
+| `localExists()` | `logical` | Check if local cached file exists. |
+| `getRemote()` | `char` | Returns the remote file path string. |
+
+---
+
+## `CacheLocallyForRemote` — Write Cache (Local → Remote)
+
+Write analysis results locally for speed, then push to a remote destination when ready using `rclone copy --immutable`. Local files are **never deleted until verified** against the remote via checksum.
+
+### Example
 
 ```matlab
-% Copy the file before you need it
-cp.touch();
+dest = pth('\\server\share\results\analysis.mat');
+clf = CacheLocallyForRemote(dest, 'C:\Users\m218089\Desktop\local_data\write_cache');
 
-% Later, get() returns the local path instantly
-data = load(cp.get());
+% Get the local path and write your data
+local_path = clf.get();
+save(local_path, 'results');
+
+% Push to remote when ready
+clf.pushToRemote();
+%   Pushing local file to remote...
+%     Local:  C:\...\write_cache\results_e9c1a0\analysis.mat
+%     Remote: \\server\share\results\analysis.mat
+%   Push completed in 5.2 seconds (100.00 MB/s)
+
+% Verify and clean up
+clf.deleteLocal();  % Checksums local vs remote first. Errors if mismatch.
 ```
 
-### Cleanup
+### API
+
+| Method | Returns | Description |
+|---|---|---|
+| `CacheLocallyForRemote(dest_pth, local_temp_dir)` | `CacheLocallyForRemote` | Constructor. `dest_pth` is the remote **destination**. |
+| `get()` | `char` | Returns local file path for writing. Does not copy. |
+| `pushToRemote()` | — | Copies local file to remote with `--immutable`. |
+| `checkSumCompareLocalAndRemote()` | `logical` | Compares local and remote by checksum (rclone check). |
+| `quickCompareLocalAndRemote()` | `logical` | Compares by file size and modification time (2s leeway). |
+| `deleteLocal()` | — | Deletes local **only after** checksum verification. Errors on mismatch. |
+| `localExists()` | `logical` | Check if local file exists. |
+| `remoteExists()` | `logical` | Check if remote file exists. |
+| `getRemote()` | `char` | Returns the remote destination path string. |
+
+---
+
+## Manager Classes
+
+### `ManageCacheToLocalTempDir` — Read Cache Manager
+
+Bulk operations on a `CacheToLocal` temp directory.
 
 ```matlab
-% Delete the local cached file when done
-cp.clearTemp();
+mgr = ManageCacheToLocalTempDir('C:\Users\m218089\Desktop\local_data\read_cache');
+mgr.listCache();              % Print table of all cached entries
+mgr.checkStale();             % Verify active JSON matches disk
+mgr.rebuildActiveJson();      % Rebuild active JSON from disk contents
+mgr.clearEntireLocalCache();  % Delete all cached files
 ```
 
-### `CachedPath` API
+### `ManageCacheLocallyForRemoteTempDir` — Write Cache Manager
 
-#### Constructor
+Bulk operations on a `CacheLocallyForRemote` temp directory.
 
 ```matlab
-obj = CachedPath(remote_path_obj, local_temp_dir, session_id)
+mgr = ManageCacheLocallyForRemoteTempDir('C:\Users\m218089\Desktop\local_data\write_cache');
+mgr.listCache();              % Print table of all cached entries
+mgr.checkStale();             % Verify active JSON matches disk
+mgr.pushAllLocalToRemote();   % Verify ALL checksums, then push all
+mgr.pushDirLocalToRemote('results_e9c1a0');   % Push one directory
+mgr.pushFileLocalToRemote('results_e9c1a0', 'analysis.mat');  % Push one file
+mgr.clearLocalCache();        % Delete local only after ALL checksums match
 ```
 
-| Argument          | Type   | Description                                          |
-|-------------------|--------|------------------------------------------------------|
-| `remote_path_obj` | `pth`  | A `pth` object pointing to the remote file.          |
-| `local_temp_dir`  | `char` | Local directory path for cached files.               |
-| `session_id`      | `char` | Identifier appended to filename to avoid conflicts.  |
+---
 
-#### Properties
+## Safety Features
 
-| Property          | Type   | Description                                      |
-|-------------------|--------|--------------------------------------------------|
-| `remote_path`     | `pth`  | The wrapped `pth` object for the remote file.    |
-| `local_temp_dir`  | `char` | Local cache directory path.                      |
-| `session_id`      | `char` | Session identifier used in cached filename.      |
-| `local_file_path` | `char` | Full path to the local cached file (computed).   |
+- **`rclone copy --immutable` everywhere** — existing remote files are never overwritten. If a file already exists and matches, rclone skips silently. If it differs, rclone errors.
+- **Separate temp directories** — read-cache and write-cache must use different directories. Managers detect and error on cross-contamination.
+- **Checksum-guarded deletion** — `CacheLocallyForRemote.deleteLocal()` verifies the remote copy matches before allowing deletion.
+- **Push-all verification** — `pushAllLocalToRemote()` checks ALL checksums first, only pushes if ALL pass.
+- **Hash-based directory naming** — files from the same remote directory share a `dirname_6charhash/` folder locally, preventing filename collisions.
+- **Audit logs** — append-only JSON logs track every download and upload with timestamps, hashes, and file sizes.
 
-#### Methods
+## Cache Directory Structure
 
-| Method              | Returns   | Description                                                              |
-|---------------------|-----------|--------------------------------------------------------------------------|
-| `get()`             | `char`    | Returns local cached path, copying from remote if needed.                |
-| `get_remote()`      | `char`    | Returns the original remote file path.                                   |
-| `touch()`           | —         | Preemptively copies the file to local cache.                             |
-| `clearTemp()`       | —         | Deletes the local cached file.                                           |
-| `check_disk_space(bytes)` | `logical` | Checks if enough local disk space exists (with 10% buffer).       |
-| `compute_local_path()` | `char` | Generates the local cached file path from remote path + session ID.     |
+```
+read_cache/
+├── cache_active.json              ← current state of local cache
+├── cache_download_log.json        ← append-only download history
+├── session_001_a3f7c2.txt         ← human-readable breadcrumb
+└── session_001_a3f7c2/
+    ├── recording.mat
+    └── events.csv
+
+write_cache/
+├── cache_active.json              ← current state of local files
+├── cache_upload_log.json          ← append-only upload history
+├── results_e9c1a0.txt
+└── results_e9c1a0/
+    └── analysis.mat
+```
+
+## Running Tests
+
+```matlab
+addpath('path/to/pth');
+addpath('path/to/pth/tests');
+runtests('tests');
+```
+
+Requires `rclone.exe` and a valid `.env` file.
 
 ---
 
