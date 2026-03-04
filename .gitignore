@@ -1,0 +1,51 @@
+# MATLAB generated files
+*.asv
+*.m~
+*.mex*
+*.mlappinstall
+*.mlpkginstall
+*.slxc
+
+# Simulink autosave
+*.autosave
+
+# MATLAB code generation
+codegen/
+
+# MATLAB project and cache
+*.prj
+.SimulinkProject/
+.MATLABDesktop/
+*.mltbx
+
+# Derived data
+*.mat
+*.fig
+*.csv
+
+# Build artifacts
+*.o
+*.obj
+*.exe
+*.dll
+*.so
+*.dylib
+
+# OS files
+.DS_Store
+Thumbs.db
+Desktop.ini
+ehthumbs.db
+
+# Editor files
+*.swp
+*.swo
+*~
+*.bak
+*.tmp
+*.temp
+
+# IDE
+.vscode/
+.idea/
+*.code-workspace
