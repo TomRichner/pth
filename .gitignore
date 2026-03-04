@@ -1,3 +1,5 @@
+*.env
+
 # MATLAB generated files
 *.asv
 *.m~
